@@ -5,6 +5,7 @@ import time
 from urllib.parse import urlparse
 import pandas as pd
 import ssl
+import ipaddress
 
 # Function to simulate and display TCP/TLS handshake and HTTP GET
 async def simulate_tcp_tls_http(session_id, animation_placeholder, use_https, cipher_suite):
@@ -46,13 +47,18 @@ async def simulate_tcp_tls_http(session_id, animation_placeholder, use_https, ci
         await asyncio.sleep(0.5)  # Simulate time between steps
 
 # Function to make an HTTP/HTTPS GET request
-async def make_http_request(session, url, session_duration, active_conn, closed_conn, session_id, animation_placeholder, use_https, ssl_context):
+async def make_http_request(session, url, session_duration, active_conn, closed_conn, session_id, animation_placeholder, use_https, ssl_context, ip):
     try:
         # Simulate TCP/TLS handshake and HTTP GET
         cipher_suite = 'TLS_AES_256_GCM_SHA384' if use_https else 'N/A'
         await simulate_tcp_tls_http(session_id, animation_placeholder, use_https, cipher_suite)
 
-        async with session.get(url, ssl=ssl_context, timeout=5) as response:
+        # Prepare headers to specify the IP address
+        headers = {'Host': urlparse(url).hostname}
+
+        # Make the request to the specific IP
+        target_url = f"{urlparse(url).scheme}://{ip}{urlparse(url).path}"
+        async with session.get(target_url, ssl=ssl_context, timeout=5, headers=headers) as response:
             status = response.status
             # Keep the connection open for the specified duration
             await asyncio.sleep(session_duration)
@@ -67,7 +73,7 @@ async def make_http_request(session, url, session_duration, active_conn, closed_
         # animation_placeholder.empty()  # Commented out to keep animations visible
 
 # Function to manage HTTP/HTTPS sessions
-async def start_http_sessions(url, num_sessions, session_duration, total_duration, interval, chart_placeholder, animations_container, use_https, ignore_ssl_errors):
+async def start_http_sessions(url, num_sessions, session_duration, total_duration, interval, chart_placeholder, animations_container, use_https, ignore_ssl_errors, ip_list):
     tasks = []
     start_time = time.time()
     active_conn = {'count': 0}
@@ -98,6 +104,7 @@ async def start_http_sessions(url, num_sessions, session_duration, total_duratio
             async with semaphore:
                 session_counter += 1
                 session_id = session_counter
+                ip = ip_list[(session_id - 1) % len(ip_list)]  # Rotate through the IP list
 
                 # Update connection counts
                 active_conn['count'] += 1
@@ -122,7 +129,7 @@ async def start_http_sessions(url, num_sessions, session_duration, total_duratio
                 # Start the HTTP/HTTPS request task
                 task = asyncio.create_task(make_http_request(
                     session, url, session_duration, active_conn, closed_conn,
-                    session_id, animation_placeholder, use_https, ssl_context))
+                    session_id, animation_placeholder, use_https, ssl_context, ip))
                 tasks.append(task)
 
                 await asyncio.sleep(interval)
@@ -145,7 +152,30 @@ def main():
     st.title("HTTP/HTTPS Traffic Simulator with TLS Handshake Animation")
 
     # Input fields
-    destination = st.text_input("Enter URL:", "example.com")
+    destination = st.text_input("Enter URL (e.g., example.com/path):", "example.com")
+
+    # Option to input multiple IP addresses or a subnet
+    ip_input = st.text_area("Enter up to 10 IP addresses or a subnet (e.g., 192.168.1.0/24):", "")
+
+    # Validate IP addresses/subnet
+    ip_list = []
+    if ip_input:
+        try:
+            # Split by commas or newlines and parse each entry
+            entries = [entry.strip() for entry in ip_input.replace(',', '\n').splitlines() if entry.strip()]
+            for entry in entries:
+                if "/" in entry:  # Subnet
+                    subnet = ipaddress.ip_network(entry, strict=False)
+                    ip_list.extend([str(ip) for ip in subnet.hosts()])
+                else:  # Single IP
+                    ip = ipaddress.ip_address(entry)
+                    ip_list.append(str(ip))
+
+            # Limit to 10 IPs
+            ip_list = ip_list[:10]
+            st.write(f"Using the following IPs: {', '.join(ip_list)}")
+        except ValueError as e:
+            st.error(f"Invalid IP/Subnet: {e}")
 
     # Protocol selection
     protocol = st.radio("Select Protocol:", ["HTTP", "HTTPS"])
@@ -163,6 +193,10 @@ def main():
 
     # Start simulation button
     if st.button("Start Simulation"):
+        if not ip_list:
+            st.error("Please enter at least one valid IP address or subnet.")
+            return
+
         # Parse the destination to get the URL
         parsed_url = urlparse(destination)
         if parsed_url.scheme:
@@ -170,7 +204,7 @@ def main():
         else:
             url = f"{protocol.lower()}://{parsed_url.geturl()}"
 
-        st.write(f"Starting {protocol} traffic simulation to {url}...")
+        st.write(f"Starting {protocol} traffic simulation to {url} with IPs: {', '.join(ip_list)}...")
 
         # Placeholder for the chart
         chart_placeholder = st.empty()
@@ -182,7 +216,7 @@ def main():
         # Run the async function
         asyncio.run(start_http_sessions(
             url, num_sessions, session_duration, total_duration, interval,
-            chart_placeholder, animations_container, use_https, ignore_ssl_errors))
+            chart_placeholder, animations_container, use_https, ignore_ssl_errors, ip_list))
 
         st.write("Simulation completed.")
 
